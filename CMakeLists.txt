@@ -18,6 +18,7 @@ target_sources(app PRIVATE
     src/car.c
     src/tachometer.c
     src/sensors.c
+    src/battery.c
     src/wifi_cmd.c
     src/control.c
 )

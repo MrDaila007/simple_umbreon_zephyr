@@ -93,7 +93,7 @@ $SAVE
 | Command | Description |
 |---------|-------------|
 | `$PING` | → `$PONG` |
-| `$BAT` | → `$BAT:0.00` (voltage, not wired in this build) |
+| `$BAT` | → `$BAT:X.XX` current pack voltage in volts |
 | `$SRV:angle` | Move servo to raw angle 0–180° |
 | `$ESC:us` | Set ESC to raw pulse width 1000–2000 µs |
 | `$LOG:ON/OFF` | Toggle `$L:` debug lines |
@@ -103,10 +103,15 @@ $SAVE
 While running the car streams one line every ~200 ms:
 
 ```
-ms,s0,s1,s2,s3,s4,s5,steer,speed,target
+ms,s0,s1,s2,s3,s4,s5,steer,speed,target,bat_v
 ```
 
-`s0`–`s5` are sensor distances (cm×10), `speed` is measured m/s, `target` is PID setpoint m/s.
+`s0`–`s5` are sensor distances (cm×10), `speed` is measured m/s, `target` is PID setpoint m/s, `bat_v` is battery voltage in volts (0.00 when `BAT=0`).
+
+When voltage drops below the `BATL` threshold the car also emits:
+```
+$WARN:BAT_LOW,v=X.XX
+```
 
 ## Tuning
 

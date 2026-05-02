@@ -21,6 +21,7 @@
 #include "car.h"
 #include "tachometer.h"
 #include "sensors.h"
+#include "battery.h"
 #include "wifi_cmd.h"
 
 #include <zephyr/kernel.h>
@@ -48,10 +49,17 @@ static int run_div;
 
 static void send_telem(const int *s, int steer, float spd_target)
 {
-	wifi_cmd_printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.2f,%.1f\n",
+	float bat = battery_voltage();
+
+	wifi_cmd_printf("%lld,%d,%d,%d,%d,%d,%d,%d,%.2f,%.1f,%.2f\n",
 			k_uptime_get(),
 			s[0], s[1], s[2], s[3], s[4], s[5],
-			steer, (double)taho_get_speed(), (double)spd_target);
+			steer, (double)taho_get_speed(), (double)spd_target,
+			(double)bat);
+
+	if (battery_is_low()) {
+		wifi_cmd_printf("$WARN:BAT_LOW,v=%.2f\n", (double)bat);
+	}
 }
 
 static void work(const struct car_settings *c)

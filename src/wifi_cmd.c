@@ -12,6 +12,7 @@
 #include "car.h"
 #include "tachometer.h"
 #include "sensors.h"
+#include "battery.h"
 #include "control.h"
 
 #include <zephyr/kernel.h>
@@ -257,10 +258,13 @@ static bool parse_set_pair(const char *pair)
 	else if (strcmp(key, "KOM")  == 0) cfg.kick_ms             = MAX(atoi(val), 0);
 	else if (strcmp(key, "COE1") == 0) cfg.coe_clear           = strtof(val, NULL);
 	else if (strcmp(key, "COE2") == 0) cfg.coe_blocked         = strtof(val, NULL);
-	else if (strcmp(key, "SVR")  == 0) cfg.servo_reverse       = atoi(val) != 0;
-	else if (strcmp(key, "S6")   == 0) cfg.use_six_sensors     = atoi(val) != 0;
-	else if (strcmp(key, "CAL")  == 0) cfg.calibrated          = atoi(val) != 0;
+	else if (strcmp(key, "SVR")  == 0) cfg.servo_reverse         = atoi(val) != 0;
+	else if (strcmp(key, "S6")   == 0) cfg.use_six_sensors       = atoi(val) != 0;
+	else if (strcmp(key, "CAL")  == 0) cfg.calibrated            = atoi(val) != 0;
 	else if (strcmp(key, "TGF")  == 0) cfg.tach_glitch_filter_us = CLAMP(atoi(val), 1, 500);
+	else if (strcmp(key, "BAT")  == 0) cfg.bat_enabled           = atoi(val) != 0;
+	else if (strcmp(key, "BATM") == 0) cfg.bat_multiplier        = strtof(val, NULL);
+	else if (strcmp(key, "BATL") == 0) cfg.bat_low               = strtof(val, NULL);
 	else return false;
 
 	return true;
@@ -297,11 +301,15 @@ static void cmd_get(void)
 	wifi_cmd_printf(
 		",SVR=%d,S6=%d,CAL=%d"
 		",TGF=%d"
+		",BAT=%d,BATM=%.2f,BATL=%.1f,BV=%.2f"
 		",SNS=%d,SMX=%d,FWV=1.0.0\n",
 		c.servo_reverse ? 1 : 0,
 		c.use_six_sensors ? 1 : 0,
 		c.calibrated ? 1 : 0,
 		c.tach_glitch_filter_us,
+		c.bat_enabled ? 1 : 0,
+		(double)c.bat_multiplier, (double)c.bat_low,
+		(double)battery_voltage(),
 		SENSOR_COUNT, MAX_SENSOR_RANGE);
 }
 
@@ -381,7 +389,7 @@ static void dispatch_command(const char *line)
 	} else if (strcmp(line, "$STATUS") == 0) {
 		wifi_cmd_printf("$STS:%s\n", control_is_running() ? "RUN" : "STOP");
 	} else if (strcmp(line, "$BAT") == 0) {
-		wifi_cmd_send("$BAT:0.00\n");
+		wifi_cmd_printf("$BAT:%.2f\n", (double)battery_voltage());
 	} else if (strncmp(line, "$DRV:", 5) == 0) {
 		cmd_drv(line + 5);
 	} else if (strncmp(line, "$SRV:", 5) == 0) {

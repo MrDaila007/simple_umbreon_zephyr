@@ -115,7 +115,28 @@ Speed is computed from the interval between the last two encoder pulses, not a p
 
 ---
 
-## 7. Full parameter reference
+## 7. Battery monitor
+
+The battery ADC reads GP28 (ADC channel 2) via a resistor voltage divider and scales the result by `BATM` to recover the actual pack voltage.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `BAT` | 0 | **Enable battery monitor** (0/1). Set to 1 to enable ADC reading and `$WARN:BAT_LOW` alerts. |
+| `BATM` | 4.85 | **Multiplier**. Converts the ADC pin voltage to pack voltage: `V_pack = V_adc × BATM`. For a voltage divider with R1=390kΩ and R2=100kΩ (≈ 4.9×): `BATM ≈ (R1+R2)/R2`. Calibrate by comparing `$BAT` against a multimeter. |
+| `BATL` | 6.0 | **Low threshold** (V). When pack voltage drops below this and `BAT=1`, the car emits `$WARN:BAT_LOW,v=X.XX` every telemetry tick (~200 ms). |
+
+**Enable and calibrate:**
+```
+$SET:BAT=1,BATM=4.85,BATL=6.5
+$BAT            # read current voltage → $BAT:X.XX
+$SAVE
+```
+
+Battery voltage also appears as the last column of the telemetry stream (`bat_v`).
+
+---
+
+## 8. Full parameter reference
 
 | Key | cfg field | Units | Range |
 |-----|-----------|-------|-------|
@@ -143,5 +164,9 @@ Speed is computed from the interval between the last two encoder pulses, not a p
 | `COE1` | `coe_clear` | — | 0–5 |
 | `COE2` | `coe_blocked` | — | 0–5 |
 | `SVR` | `servo_reverse` | 0/1 | — |
+| `S6` | `use_six_sensors` | 0/1 | — |
 | `CAL` | `calibrated` | 0/1 | — |
 | `TGF` | `tach_glitch_filter_us` | µs | 1–500 |
+| `BAT` | `bat_enabled` | 0/1 | — |
+| `BATM` | `bat_multiplier` | — | 0.1–20 |
+| `BATL` | `bat_low` | V | 0.1–20 |

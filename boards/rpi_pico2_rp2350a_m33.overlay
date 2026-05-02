@@ -8,13 +8,15 @@
  *   PWM   GP11 (slice 5B) — Motor ESC
  *   GPIO  GP13 — Tachometer interrupt (RISING)
  *   GPIO  GP6,7,8,9,14,15 — VL53L0X XSHUT pins
+ *   ADC   GP28 (channel 2) — Battery voltage divider
  *
  * Removed vs umbreon_zephyr: MPU-6050 (I2C0), SSD1306 OLED, rotary encoder,
- *   ADC battery, UART0 console (USB CDC used instead).
+ *   UART0 console (USB CDC used instead).
  */
 
 #include <zephyr/dt-bindings/pwm/pwm.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/adc/adc.h>
 
 / {
 	chosen {
@@ -158,4 +160,19 @@
 /* ─── Enable watchdog ─────────────────────────────────────────────────────────── */
 &wdt0 {
 	status = "okay";
+};
+
+/* ─── ADC: battery voltage (GP28 = channel 2, 3.3 V reference) ───────────────── */
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
 };

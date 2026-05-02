@@ -19,6 +19,7 @@
 #include "car.h"
 #include "tachometer.h"
 #include "sensors.h"
+#include "battery.h"
 #include "wifi_cmd.h"
 #include "control.h"
 
@@ -128,6 +129,7 @@ int main(void)
 	car_init();
 	taho_init();
 	sensors_init();      /* ~500 ms I2C probing */
+	battery_init();
 	wdt_feed_kick();
 	wifi_cmd_init();
 
