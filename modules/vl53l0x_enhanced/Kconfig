@@ -1,0 +1,31 @@
+menuconfig VL53L0X_ENHANCED
+	bool "VL53L0X Enhanced ToF sensor driver"
+	default y
+	depends on DT_HAS_ST_VL53L0X_ENABLED
+	depends on I2C
+	help
+	  Enhanced VL53L0X driver with continuous measurement mode,
+	  configurable timing budget, measurement profiles, and
+	  full ST HAL access via standard Zephyr sensor API.
+
+	  Replaces the stock st,vl53l0x driver. Set CONFIG_VL53L0X=n
+	  when using this driver.
+
+if VL53L0X_ENHANCED
+
+config VL53L0X_ENHANCED_RECONFIGURE_ADDRESS
+	bool "Reconfigure I2C address at runtime"
+	default y
+	help
+	  Enable runtime reconfiguration of the sensor I2C address
+	  using XSHUT GPIO. Required for multi-sensor setups where
+	  each sensor must have a unique bus address.
+
+config VL53L0X_ENHANCED_PROXIMITY_THRESHOLD
+	int "Proximity threshold in millimeters"
+	default 100
+	help
+	  Distance threshold for the SENSOR_CHAN_PROX channel.
+	  Values at or below this threshold report proximity = 1.
+
+endif # VL53L0X_ENHANCED

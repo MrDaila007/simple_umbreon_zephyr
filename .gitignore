@@ -1,0 +1,11 @@
+# Zephyr build output
+build/
+.west/
+
+# Python venv (if ever used locally)
+.venv/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~

@@ -1,0 +1,5 @@
+name: vl53l0x_enhanced
+
+build:
+  cmake: .
+  kconfig: Kconfig

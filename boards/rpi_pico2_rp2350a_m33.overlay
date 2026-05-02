@@ -1,0 +1,161 @@
+/*
+ * Devicetree overlay for simple_umbreon_zephyr — Raspberry Pi Pico 2 (RP2350A)
+ *
+ * Pin assignment:
+ *   I2C1  GP2/GP3  100kHz — 6× VL53L0X (0x30–0x35)
+ *   UART1 GP4/GP5   115200 — WiFi bridge (ESP8266)
+ *   PWM   GP10 (slice 5A) — Steering servo
+ *   PWM   GP11 (slice 5B) — Motor ESC
+ *   GPIO  GP13 — Tachometer interrupt (RISING)
+ *   GPIO  GP6,7,8,9,14,15 — VL53L0X XSHUT pins
+ *
+ * Removed vs umbreon_zephyr: MPU-6050 (I2C0), SSD1306 OLED, rotary encoder,
+ *   ADC battery, UART0 console (USB CDC used instead).
+ */
+
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
+
+/ {
+	chosen {
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,flash-controller = &qmi;
+	};
+
+	pwmleds {
+		compatible = "pwm-leds";
+		servo: servo_pwm {
+			pwms = <&pwm 10 20000000 PWM_POLARITY_NORMAL>;
+		};
+		esc: esc_pwm {
+			pwms = <&pwm 11 20000000 PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	tachometer {
+		compatible = "gpio-keys";
+		tach_pin: tach {
+			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+			label = "Tachometer";
+		};
+	};
+};
+
+/* ─── Pinctrl overrides ──────────────────────────────────────────────────────── */
+
+/* Override I2C1 pins: GP2 (SDA), GP3 (SCL) — for VL53L0X */
+&i2c1_default {
+	group1 {
+		pinmux = <I2C1_SDA_P2>, <I2C1_SCL_P3>;
+		input-enable;
+		input-schmitt-enable;
+	};
+};
+
+/* UART1 pins: GP4 (TX), GP5 (RX) — WiFi bridge (ESP8266) */
+&pinctrl {
+	uart1_default: uart1_default {
+		group1 {
+			pinmux = <UART1_TX_P4>;
+		};
+		group2 {
+			pinmux = <UART1_RX_P5>;
+			input-enable;
+		};
+	};
+};
+
+/* PWM slice 5 (servo + ESC) */
+&pinctrl {
+	pwm_ch5ab_default: pwm_ch5ab_default {
+		group1 {
+			pinmux = <PWM_5A_P10>, <PWM_5B_P11>;
+		};
+	};
+};
+
+/* ─── I2C1: 6× VL53L0X ToF sensors ──────────────────────────────────────────── */
+&i2c1 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+
+	vl53l0x_0: vl53l0x@30 {
+		compatible = "st,vl53l0x";
+		reg = <0x30>;
+		xshut-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+	vl53l0x_1: vl53l0x@31 {
+		compatible = "st,vl53l0x";
+		reg = <0x31>;
+		xshut-gpios = <&gpio0 7 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+	vl53l0x_2: vl53l0x@32 {
+		compatible = "st,vl53l0x";
+		reg = <0x32>;
+		xshut-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+	vl53l0x_3: vl53l0x@33 {
+		compatible = "st,vl53l0x";
+		reg = <0x33>;
+		xshut-gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+	vl53l0x_4: vl53l0x@34 {
+		compatible = "st,vl53l0x";
+		reg = <0x34>;
+		xshut-gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+	vl53l0x_5: vl53l0x@35 {
+		compatible = "st,vl53l0x";
+		reg = <0x35>;
+		xshut-gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+};
+
+/* ─── UART1: WiFi bridge (GP4 TX, GP5 RX) ────────────────────────────────────── */
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};
+
+/* ─── PWM: Servo (GP10) + ESC (GP11) ─────────────────────────────────────────── */
+&pwm {
+	status = "okay";
+	pinctrl-0 = <&pwm_ch5ab_default>;
+	pinctrl-names = "default";
+};
+
+/* ─── Flash partitions: NVS storage ──────────────────────────────────────────── */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/delete-node/ partition@100;
+
+		code_partition: partition@100 {
+			label = "code-partition";
+			reg = <0x100 (DT_SIZE_M(4) - 0x100 - 0x10000)>;
+			read-only;
+		};
+
+		storage_partition: partition@3f0000 {
+			label = "storage";
+			reg = <0x003F0000 0x00010000>;
+		};
+	};
+};
+
+/* ─── Enable watchdog ─────────────────────────────────────────────────────────── */
+&wdt0 {
+	status = "okay";
+};

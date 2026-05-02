@@ -1,0 +1,15 @@
+/* USB CDC-ACM debug console overlay
+ * Redirects zephyr,console from UART0 to USB virtual serial port.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_uart0;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
