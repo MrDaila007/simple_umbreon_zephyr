@@ -258,6 +258,7 @@ static bool parse_set_pair(const char *pair)
 	else if (strcmp(key, "COE1") == 0) cfg.coe_clear           = strtof(val, NULL);
 	else if (strcmp(key, "COE2") == 0) cfg.coe_blocked         = strtof(val, NULL);
 	else if (strcmp(key, "SVR")  == 0) cfg.servo_reverse       = atoi(val) != 0;
+	else if (strcmp(key, "S6")   == 0) cfg.use_six_sensors     = atoi(val) != 0;
 	else if (strcmp(key, "CAL")  == 0) cfg.calibrated          = atoi(val) != 0;
 	else if (strcmp(key, "TGF")  == 0) cfg.tach_glitch_filter_us = CLAMP(atoi(val), 1, 500);
 	else return false;
@@ -294,10 +295,11 @@ static void cmd_get(void)
 		(double)c.coe_clear, (double)c.coe_blocked);
 
 	wifi_cmd_printf(
-		",SVR=%d,CAL=%d"
+		",SVR=%d,S6=%d,CAL=%d"
 		",TGF=%d"
 		",SNS=%d,SMX=%d,FWV=1.0.0\n",
 		c.servo_reverse ? 1 : 0,
+		c.use_six_sensors ? 1 : 0,
 		c.calibrated ? 1 : 0,
 		c.tach_glitch_filter_us,
 		SENSOR_COUNT, MAX_SENSOR_RANGE);

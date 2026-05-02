@@ -10,7 +10,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
-#include <zephyr/fs/nvs.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 #include <math.h>
@@ -20,12 +20,12 @@ LOG_MODULE_REGISTER(settings, LOG_LEVEL_INF);
 
 /* ─── NVS setup ───────────────────────────────────────────────────────────── */
 #define NVS_PARTITION      storage_partition
-#define NVS_PARTITION_ID   FIXED_PARTITION_ID(NVS_PARTITION)
+#define NVS_PARTITION_ID   PARTITION_ID(NVS_PARTITION)
 
 #define NVS_KEY_SETTINGS   1
 
 #define SETTINGS_MAGIC     0x554D4252  /* "UMBR" */
-#define SETTINGS_VERSION   10
+#define SETTINGS_VERSION   11
 
 static struct nvs_fs nvs;
 static bool nvs_ready;
@@ -63,6 +63,7 @@ struct __attribute__((packed)) nvs_settings {
 	int16_t  stall_thresh;
 	uint8_t  imu_rotate;
 	uint8_t  servo_reverse;
+	uint8_t  use_six_sensors;
 	uint8_t  calibrated;
 	uint8_t  bat_enabled;
 	float    bat_multiplier;
@@ -105,9 +106,10 @@ static void set_defaults(void)
 	cfg.race_cw       = true;
 	cfg.stuck_thresh  = 25;
 	cfg.stall_thresh  = 50;
-	cfg.imu_rotate    = true;
-	cfg.servo_reverse = false;
-	cfg.calibrated    = false;
+	cfg.imu_rotate        = true;
+	cfg.servo_reverse     = false;
+	cfg.use_six_sensors   = true;
+	cfg.calibrated        = false;
 	cfg.bat_enabled    = false;
 	cfg.bat_multiplier = 4.85f;
 	cfg.bat_low        = 6.0f;
@@ -213,8 +215,9 @@ static void populate_nvs(struct nvs_settings *s)
 	s->stuck_thresh  = (int16_t)cfg.stuck_thresh;
 	s->stall_thresh  = (int16_t)cfg.stall_thresh;
 	s->imu_rotate    = cfg.imu_rotate ? 1 : 0;
-	s->servo_reverse = cfg.servo_reverse ? 1 : 0;
-	s->calibrated    = cfg.calibrated ? 1 : 0;
+	s->servo_reverse    = cfg.servo_reverse ? 1 : 0;
+	s->use_six_sensors  = cfg.use_six_sensors ? 1 : 0;
+	s->calibrated       = cfg.calibrated ? 1 : 0;
 	s->bat_enabled   = cfg.bat_enabled ? 1 : 0;
 	s->bat_multiplier = cfg.bat_multiplier;
 	s->bat_low       = cfg.bat_low;
@@ -253,8 +256,9 @@ static void apply_nvs(const struct nvs_settings *s)
 	cfg.stuck_thresh  = s->stuck_thresh;
 	cfg.stall_thresh  = s->stall_thresh;
 	cfg.imu_rotate    = s->imu_rotate != 0;
-	cfg.servo_reverse = s->servo_reverse != 0;
-	cfg.calibrated    = s->calibrated != 0;
+	cfg.servo_reverse   = s->servo_reverse != 0;
+	cfg.use_six_sensors = s->use_six_sensors != 0;
+	cfg.calibrated      = s->calibrated != 0;
 	cfg.bat_enabled   = s->bat_enabled != 0;
 	cfg.bat_multiplier = s->bat_multiplier;
 	cfg.bat_low       = s->bat_low;

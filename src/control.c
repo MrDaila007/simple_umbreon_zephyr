@@ -4,11 +4,16 @@
  * Ports roborace_car/roborace_car.ino work() to Zephyr.
  * No IMU, no stuck/wrong-dir recovery. PID speed loop via car.c.
  *
- * Sensor role mapping (umbreon overlay order → Arduino roles):
- *   IDX_LEFT (3)       → s[0] left side
- *   IDX_FRONT_LEFT (4) → s[1] front-left
- *   IDX_FRONT_RIGHT(1) → s[2] front-right
- *   IDX_RIGHT (2)      → s[3] right side
+ * All 6 sensors are used. Physical layout:
+ *
+ *          FRONT
+ *   FL(4)       FR(1)
+ * HL(5)           HR(0)
+ *   L(3)         R(2)
+ *          REAR
+ *
+ * Front obstacle : FL(4), FR(1)            — blocked-lane detection
+ * Side wall dist : MIN(L,HL), MIN(R,HR)    — catches angled wall approaches
  */
 
 #include "control.h"
@@ -19,6 +24,7 @@
 #include "wifi_cmd.h"
 
 #include <zephyr/kernel.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(control, LOG_LEVEL_INF);
@@ -52,24 +58,37 @@ static void work(const struct car_settings *c)
 {
 	int *s = sensors_poll();
 
-	int L  = s[IDX_LEFT];
-	int FL = s[IDX_FRONT_LEFT];
+	int HR = s[IDX_HARD_RIGHT];
 	int FR = s[IDX_FRONT_RIGHT];
 	int R  = s[IDX_RIGHT];
+	int L  = s[IDX_LEFT];
+	int FL = s[IDX_FRONT_LEFT];
+	int HL = s[IDX_HARD_LEFT];
 
+	/* Front obstacle detection: diagonal sensors only */
 	bool f_l = FL < c->front_obstacle_dist;
 	bool f_r = FR < c->front_obstacle_dist;
 
+	/* Side wall distances.
+	 * 6-sensor mode: MIN of each pair catches angled approaches early.
+	 * 4-sensor mode: pure side sensors only (legacy behaviour). */
+	int left_wall  = c->use_six_sensors ? MIN(L, HL) : L;
+	int right_wall = c->use_six_sensors ? MIN(R, HR) : R;
+
 	int diff;
-	if (L > c->side_open_dist && R > c->side_open_dist) {
-		/* Both sides open: bias right to hug one wall */
+	if (left_wall > c->side_open_dist && right_wall > c->side_open_dist) {
+		/* Both sides open: bias right to find a wall */
 		diff = 800;
 	} else {
-		diff = R - L;
+		diff = right_wall - left_wall;
 	}
-	if (L < c->all_close_dist && FL < c->all_close_dist &&
-	    FR < c->all_close_dist && R < c->all_close_dist) {
-		/* Boxed in: hard right */
+
+	/* Boxed in: core 4 sensors always checked; HL/HR added in 6-sensor mode */
+	bool boxed = (L  < c->all_close_dist) && (FL < c->all_close_dist) &&
+		     (FR < c->all_close_dist) && (R  < c->all_close_dist) &&
+		     (!c->use_six_sensors ||
+		      (HL < c->all_close_dist && HR < c->all_close_dist));
+	if (boxed) {
 		diff = 800;
 	}
 

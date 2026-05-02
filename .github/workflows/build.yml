@@ -1,0 +1,84 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  ZEPHYR_VERSION: v4.4.0
+  ZEPHYR_SDK_VERSION: 1.0.0
+  ZEPHYR_DIR: /home/runner/zephyrproject
+  SDK_DIR: /home/runner/zephyr-sdk-1.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cmake ninja-build python3-pip python3-venv \
+            wget device-tree-compiler ccache
+
+      - name: Cache Zephyr SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SDK_DIR }}
+          key: zephyr-sdk-${{ env.ZEPHYR_SDK_VERSION }}-arm-x86_64
+
+      - name: Install Zephyr SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          wget -q \
+            "https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v${{ env.ZEPHYR_SDK_VERSION }}/zephyr-sdk-${{ env.ZEPHYR_SDK_VERSION }}_linux-x86_64_minimal.tar.xz" \
+            -O /tmp/sdk.tar.xz
+          tar xf /tmp/sdk.tar.xz -C /home/runner/
+          cd ${{ env.SDK_DIR }} && ./setup.sh -t arm-zephyr-eabi -c
+
+      - name: Cache west workspace
+        id: cache-west
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ZEPHYR_DIR }}
+          key: zephyr-workspace-${{ env.ZEPHYR_VERSION }}
+
+      - name: Install west
+        run: pip install west
+
+      - name: Init west workspace
+        if: steps.cache-west.outputs.cache-hit != 'true'
+        run: |
+          west init \
+            -m https://github.com/zephyrproject-rtos/zephyr \
+            --mr ${{ env.ZEPHYR_VERSION }} \
+            ${{ env.ZEPHYR_DIR }}
+          cd ${{ env.ZEPHYR_DIR }}
+          west update --narrow -o=--depth=1
+
+      - name: Install Python requirements
+        run: pip install -r ${{ env.ZEPHYR_DIR }}/zephyr/scripts/requirements.txt
+
+      - name: Build
+        env:
+          ZEPHYR_SDK_INSTALL_DIR: ${{ env.SDK_DIR }}
+        run: |
+          cd ${{ env.ZEPHYR_DIR }}
+          west build \
+            -b rpi_pico2/rp2350a/m33 \
+            ${{ github.workspace }} \
+            --build-dir ${{ env.ZEPHYR_DIR }}/build \
+            --pristine always
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: ${{ env.ZEPHYR_DIR }}/build/zephyr/zephyr.uf2
+          if-no-files-found: error

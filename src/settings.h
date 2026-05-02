@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ─── Runtime-configurable parameters (34 total) ──────────────────────────── */
+/* ─── Runtime-configurable parameters (35 total) ──────────────────────────── */
 struct car_settings {
 	/* Obstacle thresholds (cm×10) */
 	int front_obstacle_dist;
@@ -55,6 +55,9 @@ struct car_settings {
 
 	/* Servo */
 	bool servo_reverse;
+
+	/* Sensor mode: true = use all 6 sensors, false = 4-sensor legacy mode */
+	bool use_six_sensors;
 
 	/* Calibration */
 	bool calibrated;

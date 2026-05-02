@@ -11,10 +11,10 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────────────
-ZEPHYR_VERSION="v4.3.0"
+ZEPHYR_VERSION="v4.4.0"
 ZEPHYR_SDK_VERSION="1.0.0"
 ZEPHYR_SDK_INSTALL_DIR="${HOME}/zephyr-sdk-${ZEPHYR_SDK_VERSION}"
-ZEPHYR_DIR="${HOME}/zephyrproject-v4.3"
+ZEPHYR_DIR="${HOME}/zephyrproject-v4.4"
 
 ZEPHYR_PATCH_URL="https://github.com/zephyrproject-rtos/zephyr/commit/5d36e85b99a.patch"
 HAL_PATCH_URL="https://github.com/zephyrproject-rtos/hal_rpi_pico/commit/5d7744c.patch"
