@@ -268,6 +268,9 @@ static bool parse_set_pair(const char *pair)
 	else if (strcmp(key, "BEN")  == 0) cfg.bat_enabled           = atoi(val) != 0;
 	else if (strcmp(key, "BML")  == 0) cfg.bat_multiplier        = strtof(val, NULL);
 	else if (strcmp(key, "BLV")  == 0) cfg.bat_low               = strtof(val, NULL);
+	else if (strcmp(key, "RVT")  == 0) cfg.reverse_time_ms       = CLAMP(atoi(val), 0, 5000);
+	else if (strcmp(key, "TRT")  == 0) cfg.turn_time_ms          = CLAMP(atoi(val), 0, 5000);
+	else if (strcmp(key, "RVS")  == 0) cfg.reverse_speed         = strtof(val, NULL);
 	else return false;
 
 	return true;
@@ -305,6 +308,7 @@ static void cmd_get(void)
 		",SVR=%d,S6=%d,CAL=%d"
 		",TGF=%d"
 		",BEN=%d,BML=%.2f,BLV=%.1f,BV=%.2f"
+		",RVT=%d,TRT=%d,RVS=%.2f"
 		",SNS=%d,SMX=%d,FWV=1.0.0\n",
 		c.servo_reverse ? 1 : 0,
 		c.use_six_sensors ? 1 : 0,
@@ -313,6 +317,7 @@ static void cmd_get(void)
 		c.bat_enabled ? 1 : 0,
 		(double)c.bat_multiplier, (double)c.bat_low,
 		(double)battery_voltage(),
+		c.reverse_time_ms, c.turn_time_ms, (double)c.reverse_speed,
 		SENSOR_COUNT, MAX_SENSOR_RANGE);
 }
 

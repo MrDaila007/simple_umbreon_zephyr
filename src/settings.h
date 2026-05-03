@@ -69,6 +69,11 @@ struct car_settings {
 
 	/* Tachometer glitch reject threshold (µs) */
 	int tach_glitch_filter_us;
+
+	/* Recovery (reverse-and-turn when stuck) */
+	int   reverse_time_ms;
+	int   turn_time_ms;
+	float reverse_speed;
 };
 
 /* Global configuration instance */

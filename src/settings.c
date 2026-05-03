@@ -25,7 +25,7 @@ LOG_MODULE_REGISTER(settings, LOG_LEVEL_INF);
 #define NVS_KEY_SETTINGS   1
 
 #define SETTINGS_MAGIC     0x554D4252  /* "UMBR" */
-#define SETTINGS_VERSION   11
+#define SETTINGS_VERSION   12
 
 static struct nvs_fs nvs;
 static bool nvs_ready;
@@ -69,6 +69,9 @@ struct __attribute__((packed)) nvs_settings {
 	float    bat_multiplier;
 	float    bat_low;
 	int16_t  tach_glitch_filter_us;
+	int16_t  reverse_time_ms;
+	int16_t  turn_time_ms;
+	float    reverse_speed;
 	uint8_t  checksum;
 };
 
@@ -114,6 +117,9 @@ static void set_defaults(void)
 	cfg.bat_multiplier = 4.85f;
 	cfg.bat_low        = 6.0f;
 	cfg.tach_glitch_filter_us = 35;
+	cfg.reverse_time_ms = 500;
+	cfg.turn_time_ms    = 300;
+	cfg.reverse_speed   = 0.3f;
 }
 
 static void sanitize_cfg(void)
@@ -140,6 +146,10 @@ static void sanitize_cfg(void)
 	cfg.stuck_thresh = CLAMP(cfg.stuck_thresh, 0, 1000);
 	cfg.stall_thresh = CLAMP(cfg.stall_thresh, 0, 1000);
 	cfg.tach_glitch_filter_us = CLAMP(cfg.tach_glitch_filter_us, 1, 500);
+	cfg.reverse_time_ms = CLAMP(cfg.reverse_time_ms, 0, 5000);
+	cfg.turn_time_ms    = CLAMP(cfg.turn_time_ms, 0, 5000);
+	cfg.reverse_speed   = CLAMP(cfg.reverse_speed, 0.0f, 2.0f);
+	if (!isfinite(cfg.reverse_speed)) cfg.reverse_speed = 0.3f;
 
 	cfg.pid_kp = CLAMP(cfg.pid_kp, 0.0f, 5000.0f);
 	cfg.pid_ki = CLAMP(cfg.pid_ki, 0.0f, 10000.0f);
@@ -222,6 +232,9 @@ static void populate_nvs(struct nvs_settings *s)
 	s->bat_multiplier = cfg.bat_multiplier;
 	s->bat_low       = cfg.bat_low;
 	s->tach_glitch_filter_us = (int16_t)cfg.tach_glitch_filter_us;
+	s->reverse_time_ms = (int16_t)cfg.reverse_time_ms;
+	s->turn_time_ms    = (int16_t)cfg.turn_time_ms;
+	s->reverse_speed   = cfg.reverse_speed;
 	s->checksum      = compute_checksum(s);
 }
 
@@ -263,6 +276,9 @@ static void apply_nvs(const struct nvs_settings *s)
 	cfg.bat_multiplier = s->bat_multiplier;
 	cfg.bat_low       = s->bat_low;
 	cfg.tach_glitch_filter_us = s->tach_glitch_filter_us;
+	cfg.reverse_time_ms = s->reverse_time_ms;
+	cfg.turn_time_ms    = s->turn_time_ms;
+	cfg.reverse_speed   = s->reverse_speed;
 	sanitize_cfg();
 }
 
