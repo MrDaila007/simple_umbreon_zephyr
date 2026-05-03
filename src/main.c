@@ -8,11 +8,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/logging/log.h>
 
 #if defined(CONFIG_USB_DEVICE_STACK)
 #include <zephyr/usb/usb_device.h>
-#include <zephyr/drivers/uart.h>
 #endif
 
 #include "settings.h"
@@ -88,7 +88,8 @@ static void blink_led(int count, int ms)
 }
 
 /* ─── USB console init ───────────────────────────────────────────────────────── */
-#if defined(CONFIG_USB_DEVICE_STACK)
+/* Wait up to 3 s for a USB terminal to assert DTR before printing the banner.
+ * Works for both the legacy USB_DEVICE_STACK and the newer _NEXT stack. */
 static void usb_console_init(void)
 {
 	const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
@@ -97,7 +98,9 @@ static void usb_console_init(void)
 		return;
 	}
 
+#if defined(CONFIG_USB_DEVICE_STACK)
 	usb_enable(NULL);
+#endif
 
 	uint32_t dtr = 0;
 	int64_t deadline = k_uptime_get() + 3000;
@@ -107,14 +110,11 @@ static void usb_console_init(void)
 		k_msleep(50);
 	}
 }
-#endif
 
 /* ─── Main ──────────────────────────────────────────────────────────────────── */
 int main(void)
 {
-#if defined(CONFIG_USB_DEVICE_STACK)
 	usb_console_init();
-#endif
 
 	printk("\n");
 	printk("==============================\n");
@@ -149,9 +149,14 @@ int main(void)
 	blink_led(3, 100);
 
 	wifi_cmd_printf("$BOOT:READY,UP=%lld\n", k_uptime_get());
+	wifi_cmd_send_uicap();
 
+	gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
 	while (1) {
-		k_sleep(K_FOREVER);
+		k_msleep(990);
+		gpio_pin_set_dt(&led, 1);
+		k_msleep(10);
+		gpio_pin_set_dt(&led, 0);
 	}
 
 	return 0;

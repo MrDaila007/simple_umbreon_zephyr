@@ -1,7 +1,7 @@
 /*
  * wifi_cmd.c — UART1 WiFi command protocol (minimal racing set)
  *
- * Supports: $PING $GET $SET $SAVE $LOAD $RST $START $STOP $STATUS
+ * Supports: $PING $UICAP $GET $SET $SAVE $LOAD $RST $START $STOP $STATUS
  *           $BAT $DRV $DRVEN $DRVOFF $SRV $ESC $LOG:ON $LOG:OFF
  * Drops from umbreon_zephyr: $TEST $TRK $MONITOR $DIAG $SNS $IMU $PID $SYS $HELP
  * Drops: async-cmd thread, menu_cmd_q poll branch.
@@ -25,6 +25,9 @@
 #include <stdarg.h>
 
 LOG_MODULE_REGISTER(wifi_cmd, LOG_LEVEL_INF);
+
+#define UI_MANIFEST \
+	"$UI:sec=sensors,run,ctrl,settings,drive,console\n"
 
 /* ─── UART device ─────────────────────────────────────────────────────────── */
 static const struct device *uart_dev;
@@ -262,9 +265,9 @@ static bool parse_set_pair(const char *pair)
 	else if (strcmp(key, "S6")   == 0) cfg.use_six_sensors       = atoi(val) != 0;
 	else if (strcmp(key, "CAL")  == 0) cfg.calibrated            = atoi(val) != 0;
 	else if (strcmp(key, "TGF")  == 0) cfg.tach_glitch_filter_us = CLAMP(atoi(val), 1, 500);
-	else if (strcmp(key, "BAT")  == 0) cfg.bat_enabled           = atoi(val) != 0;
-	else if (strcmp(key, "BATM") == 0) cfg.bat_multiplier        = strtof(val, NULL);
-	else if (strcmp(key, "BATL") == 0) cfg.bat_low               = strtof(val, NULL);
+	else if (strcmp(key, "BEN")  == 0) cfg.bat_enabled           = atoi(val) != 0;
+	else if (strcmp(key, "BML")  == 0) cfg.bat_multiplier        = strtof(val, NULL);
+	else if (strcmp(key, "BLV")  == 0) cfg.bat_low               = strtof(val, NULL);
 	else return false;
 
 	return true;
@@ -301,7 +304,7 @@ static void cmd_get(void)
 	wifi_cmd_printf(
 		",SVR=%d,S6=%d,CAL=%d"
 		",TGF=%d"
-		",BAT=%d,BATM=%.2f,BATL=%.1f,BV=%.2f"
+		",BEN=%d,BML=%.2f,BLV=%.1f,BV=%.2f"
 		",SNS=%d,SMX=%d,FWV=1.0.0\n",
 		c.servo_reverse ? 1 : 0,
 		c.use_six_sensors ? 1 : 0,
@@ -354,12 +357,16 @@ static void cmd_drv(const char *args)
 	control_set_manual(steer, speed);
 }
 
+void wifi_cmd_send_uicap(void) { wifi_cmd_send(UI_MANIFEST); }
+
 /* ─── Command dispatcher ─────────────────────────────────────────────────── */
 
 static void dispatch_command(const char *line)
 {
 	if (strcmp(line, "$PING") == 0) {
 		wifi_cmd_send("$PONG\n");
+	} else if (strcmp(line, "$UICAP") == 0) {
+		wifi_cmd_send_uicap();
 	} else if (strcmp(line, "$GET") == 0) {
 		cmd_get();
 	} else if (strncmp(line, "$SET:", 5) == 0) {

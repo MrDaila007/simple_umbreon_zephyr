@@ -77,6 +77,11 @@
 	};
 };
 
+/* ─── Disable I2C0 — board default enables it on GP4/GP5, conflicting with UART1 ── */
+&i2c0 {
+	status = "disabled";
+};
+
 /* ─── I2C1: 6× VL53L0X ToF sensors ──────────────────────────────────────────── */
 &i2c1 {
 	status = "okay";

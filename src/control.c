@@ -46,6 +46,7 @@ static volatile int64_t last_drv_ms;
 extern void wdt_feed_kick(void);
 
 static int run_div;
+static uint32_t telem_count;
 
 static void send_telem(const int *s, int steer, float spd_target)
 {
@@ -56,6 +57,10 @@ static void send_telem(const int *s, int steer, float spd_target)
 			s[0], s[1], s[2], s[3], s[4], s[5],
 			steer, (double)taho_get_speed(), (double)spd_target,
 			(double)bat);
+
+	if ((++telem_count % 25) == 0) {  /* every ~5 s */
+		LOG_INF("telem tx: %u frames", telem_count);
+	}
 
 	if (battery_is_low()) {
 		wifi_cmd_printf("$WARN:BAT_LOW,v=%.2f\n", (double)bat);

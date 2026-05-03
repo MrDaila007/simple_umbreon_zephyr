@@ -19,3 +19,6 @@ void wifi_log(const char *fmt, ...);
 
 /* Check if WiFi logging is enabled */
 bool wifi_log_enabled(void);
+
+/* Emit the $UI: capability manifest — called at boot and on $UICAP command */
+void wifi_cmd_send_uicap(void);
