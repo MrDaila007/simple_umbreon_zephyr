@@ -151,12 +151,8 @@ int main(void)
 	wifi_cmd_printf("$BOOT:READY,UP=%lld\n", k_uptime_get());
 	wifi_cmd_send_uicap();
 
-	gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
 	while (1) {
-		k_msleep(990);
-		gpio_pin_set_dt(&led, 1);
-		k_msleep(10);
-		gpio_pin_set_dt(&led, 0);
+		k_sleep(K_FOREVER);
 	}
 
 	return 0;

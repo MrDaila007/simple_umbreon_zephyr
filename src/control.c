@@ -27,8 +27,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/gpio.h>
 
 LOG_MODULE_REGISTER(control, LOG_LEVEL_INF);
+
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 
 #define CONTROL_STACK_SIZE 4096
 #define CONTROL_PRIORITY   2
@@ -69,6 +72,7 @@ static void send_telem(const int *s, int steer, float spd_target)
 
 static void work(const struct car_settings *c)
 {
+	gpio_pin_toggle_dt(&led);
 	int *s = sensors_poll();
 
 	int HR = s[IDX_HARD_RIGHT];
@@ -171,6 +175,7 @@ static void control_thread(void *a, void *b, void *c_)
 
 void control_init(void)
 {
+	gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE);
 	k_thread_create(&control_td, control_stack,
 			K_THREAD_STACK_SIZEOF(control_stack),
 			control_thread, NULL, NULL, NULL,
