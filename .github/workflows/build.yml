@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Zephyr 4.4+ CMake requires Python >= 3.12; ubuntu-22.04 defaults to 3.10.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install system packages
         run: |
           sudo apt-get update -qq
@@ -42,6 +47,13 @@ jobs:
           tar xf /tmp/sdk.tar.xz -C /home/runner/
           cd ${{ env.SDK_DIR }} && ./setup.sh -t arm-zephyr-eabi -c
 
+      # Isolate Python from distro pip and avoid Zephyr extras (twister/compliance/lint):
+      # those pull transitive ruamel YAML stacks that can exhaust pip's resolver on CI.
+      - name: Prepare Python tooling
+        run: |
+          python3 -m venv "${GITHUB_WORKSPACE}/.ci-py"
+          "${GITHUB_WORKSPACE}/.ci-py/bin/python" -m pip install --upgrade pip setuptools wheel
+
       - name: Cache west workspace
         id: cache-west
         uses: actions/cache@v4
@@ -50,11 +62,13 @@ jobs:
           key: zephyr-workspace-${{ env.ZEPHYR_VERSION }}
 
       - name: Install west
-        run: pip install west
+        run: |
+          "${GITHUB_WORKSPACE}/.ci-py/bin/pip" install west
 
       - name: Init west workspace
         if: steps.cache-west.outputs.cache-hit != 'true'
         run: |
+          export PATH="${GITHUB_WORKSPACE}/.ci-py/bin:$PATH"
           west init \
             -m https://github.com/zephyrproject-rtos/zephyr \
             --mr ${{ env.ZEPHYR_VERSION }} \
@@ -62,13 +76,16 @@ jobs:
           cd ${{ env.ZEPHYR_DIR }}
           west update --narrow -o=--depth=1
 
+      # Firmware build matches Zephyr "base" Python deps only (same idea as BUILD needs).
       - name: Install Python requirements
-        run: pip install -r ${{ env.ZEPHYR_DIR }}/zephyr/scripts/requirements.txt
+        run: |
+          "${GITHUB_WORKSPACE}/.ci-py/bin/pip" install -r ${{ env.ZEPHYR_DIR }}/zephyr/scripts/requirements-base.txt
 
       - name: Build
         env:
           ZEPHYR_SDK_INSTALL_DIR: ${{ env.SDK_DIR }}
         run: |
+          export PATH="${GITHUB_WORKSPACE}/.ci-py/bin:$PATH"
           cd ${{ env.ZEPHYR_DIR }}
           west build \
             -b rpi_pico2/rp2350a/m33 \
