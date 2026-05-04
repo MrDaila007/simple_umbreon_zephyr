@@ -19,6 +19,9 @@ int *sensors_poll_mask(uint8_t mask);
 /* Get number of successfully initialized sensors */
 int sensors_online_count(void);
 
+/* True when the control-critical sensor set is initialized and fresh. */
+bool sensors_required_ready(bool use_six_sensors);
+
 /* Get pointer to last-polled distance array (6 values, cm×10).
  * Updated by sensors_poll() in control thread. Read-only. */
 const int *sensors_get_distances(void);

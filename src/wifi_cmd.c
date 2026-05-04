@@ -23,6 +23,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
+#include <limits.h>
+#include <math.h>
 
 LOG_MODULE_REGISTER(wifi_cmd, LOG_LEVEL_INF);
 
@@ -37,6 +40,7 @@ static const struct device *uart_dev;
 static uint8_t rx_buf[RX_BUF_SIZE];
 static volatile uint16_t rx_head;
 static volatile uint16_t rx_tail;
+static volatile bool rx_overflow;
 
 /* Semaphore: ISR posts when '\n' received */
 static K_SEM_DEFINE(rx_line_sem, 0, 1);
@@ -187,6 +191,8 @@ static void uart_isr(const struct device *dev, void *user_data)
 		if (next != rx_tail) {
 			rx_buf[rx_head] = c;
 			rx_head = next;
+		} else {
+			rx_overflow = true;
 		}
 
 		if (c == '\n') {
@@ -220,11 +226,68 @@ static void uart_isr(const struct device *dev, void *user_data)
 	}
 }
 
+/* ─── Strict command parsing ─────────────────────────────────────────────── */
+
+static bool parse_int_strict(const char *text, int *out)
+{
+	char *end = NULL;
+	long value;
+
+	if (!text || !*text || !out) {
+		return false;
+	}
+
+	errno = 0;
+	value = strtol(text, &end, 10);
+	if (errno != 0 || !end || *end != '\0' ||
+	    value < INT_MIN || value > INT_MAX) {
+		return false;
+	}
+
+	*out = (int)value;
+	return true;
+}
+
+static bool parse_float_strict(const char *text, float *out)
+{
+	char *end = NULL;
+	float value;
+
+	if (!text || !*text || !out) {
+		return false;
+	}
+
+	errno = 0;
+	value = strtof(text, &end);
+	if (errno != 0 || !end || *end != '\0' || !isfinite(value)) {
+		return false;
+	}
+
+	*out = value;
+	return true;
+}
+
+static bool parse_bool01(const char *text, bool *out)
+{
+	int value;
+
+	if (!parse_int_strict(text, &value) || (value != 0 && value != 1)) {
+		return false;
+	}
+
+	*out = value != 0;
+	return true;
+}
+
 /* ─── SET command parser ──────────────────────────────────────────────────── */
 
-static bool parse_set_pair(const char *pair)
+static bool parse_set_pair(const char *pair, struct car_settings *next)
 {
 	const char *eq = strchr(pair, '=');
+	int i;
+	float f;
+	bool b;
+
 	if (!eq) {
 		return false;
 	}
@@ -238,39 +301,39 @@ static bool parse_set_pair(const char *pair)
 	key[klen] = '\0';
 	const char *val = eq + 1;
 
-	if      (strcmp(key, "FOD")  == 0) cfg.front_obstacle_dist = CLAMP(atoi(val), 10, MAX_SENSOR_RANGE);
-	else if (strcmp(key, "SOD")  == 0) cfg.side_open_dist      = CLAMP(atoi(val), 10, MAX_SENSOR_RANGE);
-	else if (strcmp(key, "ACD")  == 0) cfg.all_close_dist      = CLAMP(atoi(val), 10, MAX_SENSOR_RANGE);
-	else if (strcmp(key, "CFD")  == 0) cfg.close_front_dist    = CLAMP(atoi(val), 10, MAX_SENSOR_RANGE);
-	else if (strcmp(key, "KP")   == 0) cfg.pid_kp              = strtof(val, NULL);
-	else if (strcmp(key, "KI")   == 0) cfg.pid_ki              = strtof(val, NULL);
-	else if (strcmp(key, "KD")   == 0) cfg.pid_kd              = strtof(val, NULL);
-	else if (strcmp(key, "MSP")  == 0) cfg.min_speed           = CLAMP(atoi(val), 1000, 2000);
-	else if (strcmp(key, "XSP")  == 0) cfg.max_speed           = CLAMP(atoi(val), 1000, 2000);
-	else if (strcmp(key, "BSP")  == 0) cfg.min_bspeed          = CLAMP(atoi(val), 1000, 2000);
-	else if (strcmp(key, "MNP")  == 0) cfg.min_point           = CLAMP(atoi(val), 0, 180);
-	else if (strcmp(key, "XNP")  == 0) cfg.max_point           = CLAMP(atoi(val), 0, 180);
-	else if (strcmp(key, "NTP")  == 0) cfg.neutral_point       = CLAMP(atoi(val), 0, 180);
-	else if (strcmp(key, "ENH")  == 0) cfg.encoder_holes       = MAX(atoi(val), 1);
-	else if (strcmp(key, "WDM")  == 0) cfg.wheel_diam_m        = strtof(val, NULL);
-	else if (strcmp(key, "LMS")  == 0) cfg.loop_ms             = MAX(atoi(val), 10);
-	else if (strcmp(key, "SPD1") == 0) cfg.spd_clear           = strtof(val, NULL);
-	else if (strcmp(key, "SPD2") == 0) cfg.spd_blocked         = strtof(val, NULL);
-	else if (strcmp(key, "SLW")  == 0) cfg.spd_slew            = strtof(val, NULL);
-	else if (strcmp(key, "KOP")  == 0) cfg.kick_pct            = strtof(val, NULL);
-	else if (strcmp(key, "KOM")  == 0) cfg.kick_ms             = MAX(atoi(val), 0);
-	else if (strcmp(key, "COE1") == 0) cfg.coe_clear           = strtof(val, NULL);
-	else if (strcmp(key, "COE2") == 0) cfg.coe_blocked         = strtof(val, NULL);
-	else if (strcmp(key, "SVR")  == 0) cfg.servo_reverse         = atoi(val) != 0;
-	else if (strcmp(key, "S6")   == 0) cfg.use_six_sensors       = atoi(val) != 0;
-	else if (strcmp(key, "CAL")  == 0) cfg.calibrated            = atoi(val) != 0;
-	else if (strcmp(key, "TGF")  == 0) cfg.tach_glitch_filter_us = CLAMP(atoi(val), 1, 500);
-	else if (strcmp(key, "BEN")  == 0) cfg.bat_enabled           = atoi(val) != 0;
-	else if (strcmp(key, "BML")  == 0) cfg.bat_multiplier        = strtof(val, NULL);
-	else if (strcmp(key, "BLV")  == 0) cfg.bat_low               = strtof(val, NULL);
-	else if (strcmp(key, "RVT")  == 0) cfg.reverse_time_ms       = CLAMP(atoi(val), 0, 5000);
-	else if (strcmp(key, "TRT")  == 0) cfg.turn_time_ms          = CLAMP(atoi(val), 0, 5000);
-	else if (strcmp(key, "RVS")  == 0) cfg.reverse_speed         = strtof(val, NULL);
+	if      (strcmp(key, "FOD")  == 0) { if (!parse_int_strict(val, &i)) return false; next->front_obstacle_dist = i; }
+	else if (strcmp(key, "SOD")  == 0) { if (!parse_int_strict(val, &i)) return false; next->side_open_dist = i; }
+	else if (strcmp(key, "ACD")  == 0) { if (!parse_int_strict(val, &i)) return false; next->all_close_dist = i; }
+	else if (strcmp(key, "CFD")  == 0) { if (!parse_int_strict(val, &i)) return false; next->close_front_dist = i; }
+	else if (strcmp(key, "KP")   == 0) { if (!parse_float_strict(val, &f)) return false; next->pid_kp = f; }
+	else if (strcmp(key, "KI")   == 0) { if (!parse_float_strict(val, &f)) return false; next->pid_ki = f; }
+	else if (strcmp(key, "KD")   == 0) { if (!parse_float_strict(val, &f)) return false; next->pid_kd = f; }
+	else if (strcmp(key, "MSP")  == 0) { if (!parse_int_strict(val, &i)) return false; next->min_speed = i; }
+	else if (strcmp(key, "XSP")  == 0) { if (!parse_int_strict(val, &i)) return false; next->max_speed = i; }
+	else if (strcmp(key, "BSP")  == 0) { if (!parse_int_strict(val, &i)) return false; next->min_bspeed = i; }
+	else if (strcmp(key, "MNP")  == 0) { if (!parse_int_strict(val, &i)) return false; next->min_point = i; }
+	else if (strcmp(key, "XNP")  == 0) { if (!parse_int_strict(val, &i)) return false; next->max_point = i; }
+	else if (strcmp(key, "NTP")  == 0) { if (!parse_int_strict(val, &i)) return false; next->neutral_point = i; }
+	else if (strcmp(key, "ENH")  == 0) { if (!parse_int_strict(val, &i)) return false; next->encoder_holes = i; }
+	else if (strcmp(key, "WDM")  == 0) { if (!parse_float_strict(val, &f)) return false; next->wheel_diam_m = f; }
+	else if (strcmp(key, "LMS")  == 0) { if (!parse_int_strict(val, &i)) return false; next->loop_ms = i; }
+	else if (strcmp(key, "SPD1") == 0) { if (!parse_float_strict(val, &f)) return false; next->spd_clear = f; }
+	else if (strcmp(key, "SPD2") == 0) { if (!parse_float_strict(val, &f)) return false; next->spd_blocked = f; }
+	else if (strcmp(key, "SLW")  == 0) { if (!parse_float_strict(val, &f)) return false; next->spd_slew = f; }
+	else if (strcmp(key, "KOP")  == 0) { if (!parse_float_strict(val, &f)) return false; next->kick_pct = f; }
+	else if (strcmp(key, "KOM")  == 0) { if (!parse_int_strict(val, &i)) return false; next->kick_ms = i; }
+	else if (strcmp(key, "COE1") == 0) { if (!parse_float_strict(val, &f)) return false; next->coe_clear = f; }
+	else if (strcmp(key, "COE2") == 0) { if (!parse_float_strict(val, &f)) return false; next->coe_blocked = f; }
+	else if (strcmp(key, "SVR")  == 0) { if (!parse_bool01(val, &b)) return false; next->servo_reverse = b; }
+	else if (strcmp(key, "S6")   == 0) { if (!parse_bool01(val, &b)) return false; next->use_six_sensors = b; }
+	else if (strcmp(key, "CAL")  == 0) { if (!parse_bool01(val, &b)) return false; next->calibrated = b; }
+	else if (strcmp(key, "TGF")  == 0) { if (!parse_int_strict(val, &i)) return false; next->tach_glitch_filter_us = i; }
+	else if (strcmp(key, "BEN")  == 0) { if (!parse_bool01(val, &b)) return false; next->bat_enabled = b; }
+	else if (strcmp(key, "BML")  == 0) { if (!parse_float_strict(val, &f)) return false; next->bat_multiplier = f; }
+	else if (strcmp(key, "BLV")  == 0) { if (!parse_float_strict(val, &f)) return false; next->bat_low = f; }
+	else if (strcmp(key, "RVT")  == 0) { if (!parse_int_strict(val, &i)) return false; next->reverse_time_ms = i; }
+	else if (strcmp(key, "TRT")  == 0) { if (!parse_int_strict(val, &i)) return false; next->turn_time_ms = i; }
+	else if (strcmp(key, "RVS")  == 0) { if (!parse_float_strict(val, &f)) return false; next->reverse_speed = f; }
 	else return false;
 
 	return true;
@@ -326,21 +389,32 @@ static void cmd_get(void)
 static void cmd_set(const char *args)
 {
 	char buf[CMD_BUF_SIZE];
+	struct car_settings next;
+
 	strncpy(buf, args, sizeof(buf) - 1);
 	buf[sizeof(buf) - 1] = '\0';
 
-	settings_lock();
-	char *token = strtok(buf, ",");
+	settings_get_copy(&next);
+	if (buf[0] == '\0') {
+		wifi_cmd_send("$NAK:bad_arg\n");
+		return;
+	}
+
+	char *token = buf;
 	while (token) {
-		if (!parse_set_pair(token)) {
-			settings_unlock();
-			wifi_cmd_printf("$NAK:%s\n", token);
+		char *comma = strchr(token, ',');
+		if (comma) {
+			*comma = '\0';
+		}
+		if (token[0] == '\0' || !parse_set_pair(token, &next)) {
+			wifi_cmd_printf("$NAK:%s\n", token[0] ? token : "bad_arg");
 			return;
 		}
-		token = strtok(NULL, ",");
+		token = comma ? comma + 1 : NULL;
 	}
-	int glitch_us = cfg.tach_glitch_filter_us;
-	settings_unlock();
+	settings_sanitize(&next);
+	int glitch_us = next.tach_glitch_filter_us;
+	settings_set_copy(&next);
 	taho_set_glitch_filter_us((uint32_t)glitch_us);
 	wifi_cmd_send("$ACK\n");
 }
@@ -350,16 +424,25 @@ static void cmd_set(const char *args)
 static void cmd_drv(const char *args)
 {
 	char buf[32];
+	int steer;
+	float speed;
+
 	strncpy(buf, args, sizeof(buf) - 1);
 	buf[sizeof(buf) - 1] = '\0';
 	char *comma = strchr(buf, ',');
 	if (!comma) {
+		wifi_cmd_send("$NAK:bad_arg\n");
 		return;
 	}
 	*comma = '\0';
-	int steer = atoi(buf);
-	float speed = strtof(comma + 1, NULL);
-	control_set_manual(steer, speed);
+	if (!parse_int_strict(buf, &steer) ||
+	    !parse_float_strict(comma + 1, &speed)) {
+		wifi_cmd_send("$NAK:bad_arg\n");
+		return;
+	}
+	if (!control_set_manual(steer, speed)) {
+		wifi_cmd_send("$NAK:not_armed\n");
+	}
 }
 
 void wifi_cmd_send_uicap(void) { wifi_cmd_send(UI_MANIFEST); }
@@ -377,8 +460,11 @@ static void dispatch_command(const char *line)
 	} else if (strncmp(line, "$SET:", 5) == 0) {
 		cmd_set(line + 5);
 	} else if (strcmp(line, "$SAVE") == 0) {
-		settings_save();
-		wifi_cmd_send("$ACK\n");
+		if (settings_save()) {
+			wifi_cmd_send("$ACK\n");
+		} else {
+			wifi_cmd_send("$NAK:save_failed\n");
+		}
 	} else if (strcmp(line, "$LOAD") == 0) {
 		if (settings_load()) {
 			sync_tach_glitch_filter();
@@ -389,7 +475,11 @@ static void dispatch_command(const char *line)
 	} else if (strcmp(line, "$RST") == 0) {
 		settings_reset();
 		sync_tach_glitch_filter();
-		wifi_cmd_send("$ACK\n");
+		if (settings_save()) {
+			wifi_cmd_send("$ACK\n");
+		} else {
+			wifi_cmd_send("$NAK:save_failed\n");
+		}
 	} else if (strcmp(line, "$START") == 0) {
 		if (control_is_running()) {
 			wifi_cmd_send("$NAK:already_running\n");
@@ -405,11 +495,19 @@ static void dispatch_command(const char *line)
 	} else if (strncmp(line, "$DRV:", 5) == 0) {
 		cmd_drv(line + 5);
 	} else if (strncmp(line, "$SRV:", 5) == 0) {
-		int angle = CLAMP(atoi(line + 5), 0, 180);
-		car_write_servo_raw(angle);
+		int angle;
+		if (!parse_int_strict(line + 5, &angle)) {
+			wifi_cmd_send("$NAK:bad_arg\n");
+		} else if (!control_set_raw_servo(angle)) {
+			wifi_cmd_send("$NAK:not_armed\n");
+		}
 	} else if (strncmp(line, "$ESC:", 5) == 0) {
-		int val = CLAMP(atoi(line + 5), 1000, 2000);
-		car_write_esc_us(val);
+		int val;
+		if (!parse_int_strict(line + 5, &val)) {
+			wifi_cmd_send("$NAK:bad_arg\n");
+		} else if (!control_set_raw_esc_us(val)) {
+			wifi_cmd_send("$NAK:not_armed\n");
+		}
 	} else if (strcmp(line, "$DRVEN") == 0) {
 		control_set_drv_enabled(true);
 		wifi_cmd_send("$ACK\n");
@@ -438,14 +536,31 @@ static void wifi_cmd_thread(void *p1, void *p2, void *p3)
 
 	LOG_INF("WiFi command thread started");
 
-	wifi_cmd_send("#ms,s0,s1,s2,s3,s4,s5,steer,speed,target\n");
+	wifi_cmd_send("#ms,s0,s1,s2,s3,s4,s5,steer,speed,target,bat_v\n");
 	wifi_cmd_send("#WIFISTATUS\n");
+
+	bool line_discarding = false;
 
 	while (1) {
 		k_sem_take(&rx_line_sem, K_FOREVER);
 
+		if (rx_overflow) {
+			rx_overflow = false;
+			line_discarding = true;
+			cmd_len = 0;
+		}
+
 		uint8_t c;
 		while (rb_get(&c)) {
+			if (line_discarding) {
+				if (c == '\n' || c == '\r') {
+					line_discarding = false;
+					cmd_len = 0;
+					wifi_cmd_send("$NAK:overflow\n");
+				}
+				continue;
+			}
+
 			if (c == '\n' || c == '\r') {
 				if (cmd_len > 0) {
 					cmd_buf[cmd_len] = '\0';
@@ -456,6 +571,9 @@ static void wifi_cmd_thread(void *p1, void *p2, void *p3)
 				}
 			} else if (cmd_len < CMD_BUF_SIZE - 1) {
 				cmd_buf[cmd_len++] = (char)c;
+			} else {
+				line_discarding = true;
+				cmd_len = 0;
 			}
 		}
 	}

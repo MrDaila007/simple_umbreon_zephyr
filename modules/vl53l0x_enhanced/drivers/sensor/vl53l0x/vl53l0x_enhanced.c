@@ -203,6 +203,7 @@ static int vl53l0x_enh_start(const struct device *dev)
 	VL53L0X_Error ret;
 	uint16_t chip_id = 0;
 	int r;
+	bool released = false;
 
 	LOG_DBG("[%s] Starting", dev->name);
 
@@ -214,6 +215,7 @@ static int vl53l0x_enh_start(const struct device *dev)
 			return -EIO;
 		}
 		k_sleep(T_BOOT);
+		released = true;
 	}
 
 #ifdef CONFIG_VL53L0X_ENHANCED_RECONFIGURE_ADDRESS
@@ -221,7 +223,8 @@ static int vl53l0x_enh_start(const struct device *dev)
 		ret = VL53L0X_SetDeviceAddress(vl, 2 * cfg->i2c.addr);
 		if (ret) {
 			LOG_ERR("[%s] SetDeviceAddress failed", dev->name);
-			return -EIO;
+			r = -EIO;
+			goto fail_shutdown;
 		}
 		vl->I2cDevAddr = cfg->i2c.addr;
 		LOG_DBG("[%s] address reconfigured to 0x%02x",
@@ -234,25 +237,37 @@ static int vl53l0x_enh_start(const struct device *dev)
 	ret = VL53L0X_RdWord(vl, VL53L0X_REG_WHO_AM_I, &chip_id);
 	if (ret || chip_id != VL53L0X_CHIP_ID) {
 		LOG_ERR("[%s] chip ID mismatch: 0x%04x", dev->name, chip_id);
-		return -ENOTSUP;
+		r = -ENOTSUP;
+		goto fail_shutdown;
 	}
 
 	/* Data init */
 	ret = VL53L0X_DataInit(vl);
 	if (ret) {
 		LOG_ERR("[%s] DataInit failed: %d", dev->name, ret);
-		return -ENOTSUP;
+		r = -ENOTSUP;
+		goto fail_shutdown;
 	}
 
 	/* Full setup: calibration + default config */
 	r = vl53l0x_enh_setup(dev);
 	if (r < 0) {
-		return r;
+		goto fail_shutdown;
 	}
 
 	data->started = true;
 	LOG_DBG("[%s] Started", dev->name);
 	return 0;
+
+fail_shutdown:
+	if (released && cfg->xshut.port) {
+		int sr = gpio_pin_configure_dt(&cfg->xshut, GPIO_OUTPUT_ACTIVE);
+		if (sr < 0) {
+			LOG_ERR("[%s] XSHUT shutdown after failure failed: %d",
+				dev->name, sr);
+		}
+	}
+	return r;
 }
 
 /* ─── Sensor API: sample_fetch ───────────────────────────────────────────── */
@@ -613,6 +628,11 @@ static int vl53l0x_enh_init(const struct device *dev)
 	struct vl53l0x_enh_data *data = dev->data;
 	const struct vl53l0x_enh_config *cfg = dev->config;
 	int r;
+
+	if (!i2c_is_ready_dt(&cfg->i2c)) {
+		LOG_ERR("[%s] I2C bus not ready", dev->name);
+		return -ENODEV;
+	}
 
 	data->vl53l0x.I2cDevAddr = VL53L0X_INITIAL_ADDR;
 	data->vl53l0x.i2c = cfg->i2c.bus;

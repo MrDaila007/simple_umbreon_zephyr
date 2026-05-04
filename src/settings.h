@@ -103,6 +103,8 @@ void settings_init(void);
 bool settings_load(void);
 bool settings_save(void);
 void settings_reset(void);
+void settings_sanitize(struct car_settings *in_out);
+void settings_set_copy(const struct car_settings *in);
 
 /* Thread-safe config access */
 void settings_lock(void);

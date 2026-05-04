@@ -13,7 +13,9 @@
 #include <zephyr/kvss/nvs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/sys/crc.h>
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(settings, LOG_LEVEL_INF);
@@ -25,10 +27,11 @@ LOG_MODULE_REGISTER(settings, LOG_LEVEL_INF);
 #define NVS_KEY_SETTINGS   1
 
 #define SETTINGS_MAGIC     0x554D4252  /* "UMBR" */
-#define SETTINGS_VERSION   12
+#define SETTINGS_VERSION   14
 
 static struct nvs_fs nvs;
 static bool nvs_ready;
+static K_MUTEX_DEFINE(nvs_mutex);
 
 /* ─── NVS storage structure (packed for flash) ────────────────────────────── */
 struct __attribute__((packed)) nvs_settings {
@@ -44,9 +47,9 @@ struct __attribute__((packed)) nvs_settings {
 	int16_t  min_speed;
 	int16_t  max_speed;
 	int16_t  min_bspeed;
-	int8_t   min_point;
-	int8_t   max_point;
-	int8_t   neutral_point;
+	uint8_t  min_point;
+	uint8_t  max_point;
+	uint8_t  neutral_point;
 	int16_t  encoder_holes;
 	float    wheel_diam_m;
 	int16_t  loop_ms;
@@ -72,7 +75,7 @@ struct __attribute__((packed)) nvs_settings {
 	int16_t  reverse_time_ms;
 	int16_t  turn_time_ms;
 	float    reverse_speed;
-	uint8_t  checksum;
+	uint32_t checksum;
 };
 
 /* ─── Global configuration ────────────────────────────────────────────────── */
@@ -85,7 +88,7 @@ static void set_defaults(void)
 	cfg.front_obstacle_dist = DEFAULT_FOD;
 	cfg.side_open_dist      = DEFAULT_SOD;
 	cfg.all_close_dist      = DEFAULT_ACD;
-	cfg.close_front_dist    = 60;
+	cfg.close_front_dist    = DEFAULT_CFD;
 	cfg.pid_kp   = 66.4f;
 	cfg.pid_ki   = 0.0f;
 	cfg.pid_kd   = 4.16f;
@@ -122,74 +125,76 @@ static void set_defaults(void)
 	cfg.reverse_speed   = 0.3f;
 }
 
-static void sanitize_cfg(void)
+static void sanitize_values(struct car_settings *c)
 {
-	cfg.front_obstacle_dist = CLAMP(cfg.front_obstacle_dist, 10, MAX_SENSOR_RANGE);
-	cfg.side_open_dist = CLAMP(cfg.side_open_dist, 10, MAX_SENSOR_RANGE);
-	cfg.all_close_dist = CLAMP(cfg.all_close_dist, 10, MAX_SENSOR_RANGE);
-	cfg.close_front_dist = CLAMP(cfg.close_front_dist, 10, MAX_SENSOR_RANGE);
+	c->front_obstacle_dist = CLAMP(c->front_obstacle_dist, 10, MAX_SENSOR_RANGE);
+	c->side_open_dist = CLAMP(c->side_open_dist, 10, MAX_SENSOR_RANGE);
+	c->all_close_dist = CLAMP(c->all_close_dist, 10, MAX_SENSOR_RANGE);
+	c->close_front_dist = CLAMP(c->close_front_dist, 10, MAX_SENSOR_RANGE);
 
-	cfg.min_speed = CLAMP(cfg.min_speed, 1000, 2000);
-	cfg.max_speed = CLAMP(cfg.max_speed, 1000, 2000);
-	cfg.min_bspeed = CLAMP(cfg.min_bspeed, 1000, 2000);
-	if (cfg.max_speed < cfg.min_speed) {
-		cfg.max_speed = cfg.min_speed;
+	c->min_speed = CLAMP(c->min_speed, NEUTRAL_SPEED, 2000);
+	c->max_speed = CLAMP(c->max_speed, NEUTRAL_SPEED, 2000);
+	c->min_bspeed = CLAMP(c->min_bspeed, 1000, NEUTRAL_SPEED);
+	if (c->max_speed < c->min_speed) {
+		c->max_speed = c->min_speed;
 	}
 
-	cfg.min_point = CLAMP(cfg.min_point, 0, 180);
-	cfg.max_point = CLAMP(cfg.max_point, 0, 180);
-	cfg.neutral_point = CLAMP(cfg.neutral_point, 0, 180);
+	c->min_point = CLAMP(c->min_point, 0, 180);
+	c->max_point = CLAMP(c->max_point, 0, 180);
+	c->neutral_point = CLAMP(c->neutral_point, 0, 180);
 
-	cfg.encoder_holes = CLAMP(cfg.encoder_holes, 1, 2000);
-	cfg.loop_ms = CLAMP(cfg.loop_ms, 10, 1000);
-	cfg.kick_ms = CLAMP(cfg.kick_ms, 0, 5000);
-	cfg.stuck_thresh = CLAMP(cfg.stuck_thresh, 0, 1000);
-	cfg.stall_thresh = CLAMP(cfg.stall_thresh, 0, 1000);
-	cfg.tach_glitch_filter_us = CLAMP(cfg.tach_glitch_filter_us, 1, 500);
-	cfg.reverse_time_ms = CLAMP(cfg.reverse_time_ms, 0, 5000);
-	cfg.turn_time_ms    = CLAMP(cfg.turn_time_ms, 0, 5000);
-	cfg.reverse_speed   = CLAMP(cfg.reverse_speed, 0.0f, 2.0f);
-	if (!isfinite(cfg.reverse_speed)) cfg.reverse_speed = 0.3f;
+	c->encoder_holes = CLAMP(c->encoder_holes, 1, 2000);
+	c->loop_ms = CLAMP(c->loop_ms, 10, 1000);
+	c->kick_ms = CLAMP(c->kick_ms, 0, 5000);
+	c->stuck_thresh = CLAMP(c->stuck_thresh, 0, 1000);
+	c->stall_thresh = CLAMP(c->stall_thresh, 0, 1000);
+	c->tach_glitch_filter_us = CLAMP(c->tach_glitch_filter_us, 1, 500);
+	c->reverse_time_ms = CLAMP(c->reverse_time_ms, 0, 5000);
+	c->turn_time_ms    = CLAMP(c->turn_time_ms, 0, 5000);
+	c->reverse_speed   = CLAMP(c->reverse_speed, 0.0f, 2.0f);
+	if (!isfinite(c->reverse_speed)) c->reverse_speed = 0.3f;
 
-	cfg.pid_kp = CLAMP(cfg.pid_kp, 0.0f, 5000.0f);
-	cfg.pid_ki = CLAMP(cfg.pid_ki, 0.0f, 10000.0f);
-	cfg.pid_kd = CLAMP(cfg.pid_kd, 0.0f, 2000.0f);
-	cfg.wheel_diam_m = CLAMP(cfg.wheel_diam_m, 0.01f, 1.0f);
-	cfg.spd_clear = CLAMP(cfg.spd_clear, 0.0f, 5.0f);
-	cfg.spd_blocked = CLAMP(cfg.spd_blocked, 0.0f, 5.0f);
-	cfg.spd_slew = CLAMP(cfg.spd_slew, 0.0f, 20.0f);
-	cfg.kick_pct = CLAMP(cfg.kick_pct, 0.0f, 80.0f);
-	cfg.coe_clear = CLAMP(cfg.coe_clear, 0.0f, 5.0f);
-	cfg.coe_blocked = CLAMP(cfg.coe_blocked, 0.0f, 5.0f);
-	cfg.wrong_dir_deg = CLAMP(cfg.wrong_dir_deg, 1.0f, 360.0f);
-	cfg.bat_multiplier = CLAMP(cfg.bat_multiplier, 0.1f, 20.0f);
-	cfg.bat_low = CLAMP(cfg.bat_low, 0.1f, 20.0f);
+	c->pid_kp = CLAMP(c->pid_kp, 0.0f, 5000.0f);
+	c->pid_ki = CLAMP(c->pid_ki, 0.0f, 10000.0f);
+	c->pid_kd = CLAMP(c->pid_kd, 0.0f, 2000.0f);
+	c->wheel_diam_m = CLAMP(c->wheel_diam_m, 0.01f, 1.0f);
+	c->spd_clear = CLAMP(c->spd_clear, 0.0f, 5.0f);
+	c->spd_blocked = CLAMP(c->spd_blocked, 0.0f, 5.0f);
+	c->spd_slew = CLAMP(c->spd_slew, 0.0f, 20.0f);
+	c->kick_pct = CLAMP(c->kick_pct, 0.0f, 80.0f);
+	c->coe_clear = CLAMP(c->coe_clear, 0.0f, 5.0f);
+	c->coe_blocked = CLAMP(c->coe_blocked, 0.0f, 5.0f);
+	c->wrong_dir_deg = CLAMP(c->wrong_dir_deg, 1.0f, 360.0f);
+	c->bat_multiplier = CLAMP(c->bat_multiplier, 0.1f, 20.0f);
+	c->bat_low = CLAMP(c->bat_low, 0.1f, 20.0f);
 
-	if (!isfinite(cfg.pid_kp)) cfg.pid_kp = 0.0f;
-	if (!isfinite(cfg.pid_ki)) cfg.pid_ki = 0.0f;
-	if (!isfinite(cfg.pid_kd)) cfg.pid_kd = 0.0f;
-	if (!isfinite(cfg.wheel_diam_m)) cfg.wheel_diam_m = 0.06f;
-	if (!isfinite(cfg.spd_clear)) cfg.spd_clear = 0.0f;
-	if (!isfinite(cfg.spd_blocked)) cfg.spd_blocked = 0.0f;
-	if (!isfinite(cfg.spd_slew)) cfg.spd_slew = 0.0f;
-	if (!isfinite(cfg.kick_pct)) cfg.kick_pct = 0.0f;
-	if (!isfinite(cfg.coe_clear)) cfg.coe_clear = 0.0f;
-	if (!isfinite(cfg.coe_blocked)) cfg.coe_blocked = 0.0f;
-	if (!isfinite(cfg.wrong_dir_deg)) cfg.wrong_dir_deg = 120.0f;
-	if (!isfinite(cfg.bat_multiplier)) cfg.bat_multiplier = 4.85f;
-	if (!isfinite(cfg.bat_low)) cfg.bat_low = 6.0f;
+	if (!isfinite(c->pid_kp)) c->pid_kp = 0.0f;
+	if (!isfinite(c->pid_ki)) c->pid_ki = 0.0f;
+	if (!isfinite(c->pid_kd)) c->pid_kd = 0.0f;
+	if (!isfinite(c->wheel_diam_m)) c->wheel_diam_m = 0.06f;
+	if (!isfinite(c->spd_clear)) c->spd_clear = 0.0f;
+	if (!isfinite(c->spd_blocked)) c->spd_blocked = 0.0f;
+	if (!isfinite(c->spd_slew)) c->spd_slew = 0.0f;
+	if (!isfinite(c->kick_pct)) c->kick_pct = 0.0f;
+	if (!isfinite(c->coe_clear)) c->coe_clear = 0.0f;
+	if (!isfinite(c->coe_blocked)) c->coe_blocked = 0.0f;
+	if (!isfinite(c->wrong_dir_deg)) c->wrong_dir_deg = 120.0f;
+	if (!isfinite(c->bat_multiplier)) c->bat_multiplier = 4.85f;
+	if (!isfinite(c->bat_low)) c->bat_low = 6.0f;
+}
+
+static void sanitize_cfg(void)
+{
+	sanitize_values(&cfg);
 }
 
 /* ─── Checksum ────────────────────────────────────────────────────────────── */
-static uint8_t compute_checksum(const struct nvs_settings *s)
+static uint32_t compute_checksum(const struct nvs_settings *s)
 {
-	uint8_t sum = 0;
 	const uint8_t *p = (const uint8_t *)s;
-	size_t len = sizeof(*s) - 1;  /* exclude checksum byte */
-	for (size_t i = 0; i < len; i++) {
-		sum += p[i];
-	}
-	return sum;
+	size_t len = offsetof(struct nvs_settings, checksum);
+
+	return crc32_ieee(p, len);
 }
 
 /* ─── Pack cfg → nvs_settings ─────────────────────────────────────────────── */
@@ -207,9 +212,9 @@ static void populate_nvs(struct nvs_settings *s)
 	s->min_speed    = (int16_t)cfg.min_speed;
 	s->max_speed    = (int16_t)cfg.max_speed;
 	s->min_bspeed   = (int16_t)cfg.min_bspeed;
-	s->min_point    = (int8_t)cfg.min_point;
-	s->max_point    = (int8_t)cfg.max_point;
-	s->neutral_point = (int8_t)cfg.neutral_point;
+	s->min_point    = (uint8_t)cfg.min_point;
+	s->max_point    = (uint8_t)cfg.max_point;
+	s->neutral_point = (uint8_t)cfg.neutral_point;
 	s->encoder_holes = (int16_t)cfg.encoder_holes;
 	s->wheel_diam_m  = cfg.wheel_diam_m;
 	s->loop_ms       = (int16_t)cfg.loop_ms;
@@ -321,7 +326,9 @@ bool settings_load(void)
 	}
 
 	struct nvs_settings s;
+	k_mutex_lock(&nvs_mutex, K_FOREVER);
 	ssize_t len = nvs_read(&nvs, NVS_KEY_SETTINGS, &s, sizeof(s));
+	k_mutex_unlock(&nvs_mutex);
 	if (len != sizeof(s)) {
 		LOG_INF("No saved settings (len=%zd)", len);
 		return false;
@@ -356,14 +363,55 @@ bool settings_save(void)
 	populate_nvs(&s);
 	k_mutex_unlock(&cfg_mutex);
 
+	k_mutex_lock(&nvs_mutex, K_FOREVER);
 	ssize_t len = nvs_write(&nvs, NVS_KEY_SETTINGS, &s, sizeof(s));
+	k_mutex_unlock(&nvs_mutex);
 	if (len < 0) {
 		LOG_ERR("NVS write failed: %zd", len);
+		return false;
+	}
+	if (len != 0 && len != sizeof(s)) {
+		LOG_ERR("NVS short write: %zd/%zu", len, sizeof(s));
+		return false;
+	}
+
+	struct nvs_settings verify;
+	k_mutex_lock(&nvs_mutex, K_FOREVER);
+	ssize_t rlen = nvs_read(&nvs, NVS_KEY_SETTINGS, &verify, sizeof(verify));
+	k_mutex_unlock(&nvs_mutex);
+	if (rlen != sizeof(verify) ||
+	    verify.magic != SETTINGS_MAGIC ||
+	    verify.version != SETTINGS_VERSION ||
+	    compute_checksum(&verify) != verify.checksum ||
+	    memcmp(&verify, &s, sizeof(s)) != 0) {
+		LOG_ERR("NVS write verify failed: %zd", rlen);
 		return false;
 	}
 
 	LOG_INF("Settings saved to NVS (%zd bytes)", len);
 	return true;
+}
+
+void settings_sanitize(struct car_settings *in_out)
+{
+	if (!in_out) {
+		return;
+	}
+	sanitize_values(in_out);
+}
+
+void settings_set_copy(const struct car_settings *in)
+{
+	if (!in) {
+		return;
+	}
+
+	struct car_settings next = *in;
+	sanitize_values(&next);
+
+	k_mutex_lock(&cfg_mutex, K_FOREVER);
+	cfg = next;
+	k_mutex_unlock(&cfg_mutex);
 }
 
 void settings_reset(void)

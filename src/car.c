@@ -275,7 +275,10 @@ void car_run_calibration(void)
 	settings_lock();
 	cfg.calibrated = true;
 	settings_unlock();
-	settings_save();
+	if (!settings_save()) {
+		LOG_WRN("ESC calibration flag save failed");
+		wifi_cmd_send("$WARN:CAL_SAVE_FAILED\n");
+	}
 
 	wifi_cmd_send("$T:CAL,phase=done\n");
 	wifi_cmd_send("$TDONE:cal\n");

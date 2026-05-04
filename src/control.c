@@ -39,17 +39,59 @@ static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static K_THREAD_STACK_DEFINE(control_stack, CONTROL_STACK_SIZE);
 static struct k_thread control_td;
 
-static volatile bool  running;
-static volatile bool  drv_enabled;
-static volatile bool  manual_active;   /* set by $DRV; expires after 500 ms */
-static volatile int   manual_steer;
-static volatile float manual_speed;
-static volatile int64_t last_drv_ms;
+struct control_state {
+	bool running;
+	bool drv_enabled;
+	bool manual_active;   /* set by $DRV; expires after 500 ms */
+	bool raw_esc_active;
+	bool raw_servo_active;
+	int manual_steer;
+	float manual_speed;
+	int raw_esc_us;
+	int raw_servo_angle;
+	int64_t last_drv_ms;
+};
+
+static struct control_state ctl;
+static K_MUTEX_DEFINE(ctl_mutex);
 
 extern void wdt_feed_kick(void);
 
 static int run_div;
 static uint32_t telem_count;
+
+static void neutral_actuators(void)
+{
+	car_write_speed(0);
+	car_write_steer(0);
+	car_pid_reset();
+}
+
+static void clear_drive_command_locked(void)
+{
+	ctl.manual_active = false;
+	ctl.raw_esc_active = false;
+	ctl.raw_servo_active = false;
+	ctl.manual_steer = 0;
+	ctl.manual_speed = 0.0f;
+	ctl.raw_esc_us = NEUTRAL_SPEED;
+	ctl.raw_servo_angle = 90;
+}
+
+static void control_safe_stop(bool stop_running, bool disable_drive)
+{
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	if (stop_running) {
+		ctl.running = false;
+	}
+	if (disable_drive) {
+		ctl.drv_enabled = false;
+	}
+	clear_drive_command_locked();
+	k_mutex_unlock(&ctl_mutex);
+
+	neutral_actuators();
+}
 
 static void send_telem(const int *s, int steer, float spd_target)
 {
@@ -74,6 +116,12 @@ static void work(const struct car_settings *c)
 {
 	gpio_pin_toggle_dt(&led);
 	int *s = sensors_poll();
+	if (!sensors_required_ready(c->use_six_sensors)) {
+		control_safe_stop(true, true);
+		wifi_cmd_send("$WARN:SENSOR_FAULT\n");
+		wifi_cmd_send("$STS:STOP\n");
+		return;
+	}
 
 	int HR = s[IDX_HARD_RIGHT];
 	int FR = s[IDX_FRONT_RIGHT];
@@ -148,20 +196,46 @@ static void control_thread(void *a, void *b, void *c_)
 		settings_get_copy(&c);
 		next = (next + c.loop_ms > now) ? next + c.loop_ms : now + c.loop_ms;
 
-		bool drv_active = drv_enabled && manual_active &&
-				  (k_uptime_get() - last_drv_ms < 500);
+		struct control_state snap;
+		k_mutex_lock(&ctl_mutex, K_FOREVER);
+		snap = ctl;
+		k_mutex_unlock(&ctl_mutex);
+
+		bool has_drive_cmd = snap.manual_active || snap.raw_esc_active ||
+				     snap.raw_servo_active;
+		bool drv_fresh = has_drive_cmd &&
+				 (k_uptime_get() - snap.last_drv_ms < 500);
+		bool drv_active = snap.drv_enabled && drv_fresh;
 
 		if (drv_active) {
 			int *s = sensors_poll();
-			car_write_steer(manual_steer);
-			car_write_speed_ms(manual_speed);
-			car_pid_control();
+			if (!sensors_required_ready(c.use_six_sensors)) {
+				control_safe_stop(true, true);
+				wifi_cmd_send("$WARN:SENSOR_FAULT\n");
+				wifi_cmd_send("$STS:STOP\n");
+				continue;
+			}
+			if (snap.raw_servo_active) {
+				car_write_servo_raw(snap.raw_servo_angle);
+			} else {
+				car_write_steer(snap.manual_steer);
+			}
+			if (snap.raw_esc_active) {
+				car_write_esc_us(snap.raw_esc_us);
+			} else {
+				car_write_speed_ms(snap.manual_speed);
+				car_pid_control();
+			}
 			if (++run_div >= 5) {
 				run_div = 0;
-				send_telem(s, manual_steer, manual_speed);
+				send_telem(s, snap.manual_steer, snap.manual_speed);
 			}
-		} else if (running) {
-			manual_active = false;
+		} else if (snap.drv_enabled && has_drive_cmd && !drv_fresh) {
+			control_safe_stop(false, false);
+		} else if (snap.running) {
+			k_mutex_lock(&ctl_mutex, K_FOREVER);
+			clear_drive_command_locked();
+			k_mutex_unlock(&ctl_mutex);
 			work(&c);
 		} else {
 			int *s = sensors_poll();
@@ -185,40 +259,116 @@ void control_init(void)
 
 void control_cmd_start(void)
 {
+	struct car_settings c;
+	settings_get_copy(&c);
+	if (!sensors_required_ready(c.use_six_sensors)) {
+		wifi_cmd_send("$NAK:sensor_fault\n");
+		return;
+	}
+
 	car_pid_reset();
-	running = true;
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	ctl.running = true;
+	clear_drive_command_locked();
+	k_mutex_unlock(&ctl_mutex);
 	wifi_cmd_send("$STS:RUN\n");
 }
 
 void control_cmd_stop(void)
 {
-	running = false;
-	manual_active = false;
-	drv_enabled = false;
-	car_write_speed(0);
-	car_write_steer(0);
+	control_safe_stop(true, true);
 	wifi_cmd_send("$STS:STOP\n");
 }
 
 bool control_is_running(void)
 {
-	return running;
+	bool is_running;
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	is_running = ctl.running;
+	k_mutex_unlock(&ctl_mutex);
+	return is_running;
 }
 
-void control_set_manual(int steer, float speed)
+bool control_drive_enabled(void)
 {
-	manual_steer = steer;
-	manual_speed = speed;
-	manual_active = true;
-	last_drv_ms = k_uptime_get();
+	bool enabled;
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	enabled = ctl.drv_enabled;
+	k_mutex_unlock(&ctl_mutex);
+	return enabled;
+}
+
+bool control_set_manual(int steer, float speed)
+{
+	bool accepted = false;
+
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	if (ctl.drv_enabled) {
+		ctl.manual_steer = steer;
+		ctl.manual_speed = speed;
+		ctl.manual_active = true;
+		ctl.raw_esc_active = false;
+		ctl.raw_servo_active = false;
+		ctl.last_drv_ms = k_uptime_get();
+		accepted = true;
+	}
+	k_mutex_unlock(&ctl_mutex);
+
+	return accepted;
+}
+
+bool control_set_raw_esc_us(int us)
+{
+	bool accepted = false;
+
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	if (ctl.drv_enabled) {
+		ctl.raw_esc_us = CLAMP(us, 1000, 2000);
+		ctl.raw_esc_active = true;
+		ctl.raw_servo_active = false;
+		ctl.raw_servo_angle = 90;
+		ctl.manual_active = false;
+		ctl.manual_speed = 0.0f;
+		ctl.manual_steer = 0;
+		ctl.last_drv_ms = k_uptime_get();
+		accepted = true;
+	}
+	k_mutex_unlock(&ctl_mutex);
+
+	return accepted;
+}
+
+bool control_set_raw_servo(int angle)
+{
+	bool accepted = false;
+
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	if (ctl.drv_enabled) {
+		ctl.raw_servo_angle = CLAMP(angle, 0, 180);
+		ctl.raw_servo_active = true;
+		ctl.raw_esc_active = false;
+		ctl.raw_esc_us = NEUTRAL_SPEED;
+		ctl.manual_active = false;
+		ctl.manual_steer = 0;
+		ctl.manual_speed = 0.0f;
+		ctl.last_drv_ms = k_uptime_get();
+		accepted = true;
+	}
+	k_mutex_unlock(&ctl_mutex);
+
+	return accepted;
 }
 
 void control_set_drv_enabled(bool enabled)
 {
-	drv_enabled = enabled;
+	k_mutex_lock(&ctl_mutex, K_FOREVER);
+	ctl.drv_enabled = enabled;
 	if (!enabled) {
-		manual_active = false;
-		manual_steer = 0;
-		manual_speed = 0.0f;
+		clear_drive_command_locked();
+	}
+	k_mutex_unlock(&ctl_mutex);
+
+	if (!enabled) {
+		neutral_actuators();
 	}
 }

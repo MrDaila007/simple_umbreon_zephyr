@@ -138,7 +138,9 @@ int main(void)
 			sensors_online_count(), FW_VERSION);
 
 	wdt_feed_kick();
-	if (!cfg.calibrated) {
+	struct car_settings c;
+	settings_get_copy(&c);
+	if (!c.calibrated) {
 		car_run_calibration();
 	} else {
 		k_msleep(3700);

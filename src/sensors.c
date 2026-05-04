@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "settings.h"
 
+#include <errno.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -25,9 +26,17 @@
 LOG_MODULE_REGISTER(sensors, LOG_LEVEL_INF);
 
 #define VL53L0X_MAX_RAW  8190  /* sensor overflow / out-of-range indicator */
+#define VL53_ERROR_LIMIT 3
+#define VL53_STALE_MS    300
+#define VL53_STATUS_SIGNAL_FAIL 2
+#define VL53_STATUS_NO_UPDATE   255
 
 static int distances[SENSOR_COUNT]; /* cm×10 */
 static int online_count;
+static uint8_t error_count[SENSOR_COUNT];
+static int64_t last_ok_ms[SENSOR_COUNT];
+static bool fresh[SENSOR_COUNT];
+static K_MUTEX_DEFINE(sensor_mutex);
 
 #if CONFIG_DT_HAS_ST_VL53L0X_ENABLED
 /* ─── Device handles ──────────────────────────────────────────────────────── */
@@ -70,6 +79,9 @@ void sensors_init(void)
 	online_count = 0;
 	for (int i = 0; i < SENSOR_COUNT; i++) {
 		distances[i] = 9999;
+		error_count[i] = 0;
+		last_ok_ms[i] = 0;
+		fresh[i] = false;
 		if (vl53_devs[i] && device_is_ready(vl53_devs[i])) {
 			vl53_valid[i] = true;
 			online_count++;
@@ -118,6 +130,8 @@ void sensors_init(void)
 				     &val);
 		if (rc != 0) {
 			LOG_WRN("VL53L0X[%d] continuous start failed: %d", i, rc);
+			vl53_valid[i] = false;
+			online_count--;
 		} else {
 			cont_count++;
 		}
@@ -128,6 +142,9 @@ void sensors_init(void)
 	online_count = 0;
 	for (int i = 0; i < SENSOR_COUNT; i++) {
 		distances[i] = 9999;
+		error_count[i] = 0;
+		last_ok_ms[i] = 0;
+		fresh[i] = false;
 	}
 	LOG_WRN("VL53 disabled by devicetree overlay (HIL no-sensors mode)");
 #endif
@@ -136,35 +153,110 @@ void sensors_init(void)
 /* ─── Poll ────────────────────────────────────────────────────────────────── */
 
 #if CONFIG_DT_HAS_ST_VL53L0X_ENABLED
+static void mark_invalid(int i)
+{
+	k_mutex_lock(&sensor_mutex, K_FOREVER);
+	distances[i] = 9999;
+	fresh[i] = false;
+	k_mutex_unlock(&sensor_mutex);
+}
+
+static void mark_open(int i)
+{
+	k_mutex_lock(&sensor_mutex, K_FOREVER);
+	distances[i] = 9999;
+	error_count[i] = 0;
+	last_ok_ms[i] = k_uptime_get();
+	fresh[i] = true;
+	k_mutex_unlock(&sensor_mutex);
+}
+
+static void mark_stale_if_needed(int i)
+{
+	k_mutex_lock(&sensor_mutex, K_FOREVER);
+	if (last_ok_ms[i] > 0 &&
+	    k_uptime_get() - last_ok_ms[i] > VL53_STALE_MS) {
+		distances[i] = 9999;
+		fresh[i] = false;
+	}
+	k_mutex_unlock(&sensor_mutex);
+}
+
+static void mark_error(int i)
+{
+	k_mutex_lock(&sensor_mutex, K_FOREVER);
+	if (error_count[i] < UINT8_MAX) {
+		error_count[i]++;
+	}
+
+	if (error_count[i] >= VL53_ERROR_LIMIT ||
+	    (last_ok_ms[i] > 0 &&
+	     k_uptime_get() - last_ok_ms[i] > VL53_STALE_MS)) {
+		distances[i] = 9999;
+		fresh[i] = false;
+	}
+	k_mutex_unlock(&sensor_mutex);
+}
+
 static void store_mm(int i, int mm)
 {
-	if (mm >= VL53L0X_MAX_RAW || mm <= 0) {
-		distances[i] = 9999;
+	if (mm >= VL53L0X_MAX_RAW) {
+		mark_open(i);
+	} else if (mm <= 0) {
+		mark_error(i);
 	} else {
+		k_mutex_lock(&sensor_mutex, K_FOREVER);
 		distances[i] = (mm < MAX_SENSOR_RANGE) ? mm : MAX_SENSOR_RANGE;
+		error_count[i] = 0;
+		last_ok_ms[i] = k_uptime_get();
+		fresh[i] = true;
+		k_mutex_unlock(&sensor_mutex);
 	}
 }
 
 static void poll_one(int i)
 {
 	if (!vl53_valid[i]) {
-		distances[i] = 9999;
+		mark_invalid(i);
 		return;
 	}
 
 	int rc = sensor_sample_fetch(vl53_devs[i]);
 	if (rc != 0) {
-		return; /* -EAGAIN (no new data) or error: keep previous value */
+		if (rc == -EAGAIN) {
+			mark_stale_if_needed(i);
+			return;
+		}
+		mark_error(i);
+		return;
 	}
+
+	struct sensor_value status;
+	rc = sensor_channel_get(vl53_devs[i],
+				(enum sensor_channel)SENSOR_CHAN_VL53L0X_RANGE_STATUS,
+				&status);
+	bool status_valid = (rc == 0);
 
 	struct sensor_value val;
 	rc = sensor_channel_get(vl53_devs[i], SENSOR_CHAN_DISTANCE, &val);
 	if (rc != 0) {
+		mark_error(i);
 		return;
 	}
 
 	/* Convert meters.microns to mm (== cm×10) */
 	int mm = val.val1 * 1000 + val.val2 / 1000;
+	if (status_valid && status.val1 != 0) {
+		if (status.val1 == VL53_STATUS_SIGNAL_FAIL &&
+		    mm >= MAX_SENSOR_RANGE) {
+			mark_open(i);
+		} else if (status.val1 == VL53_STATUS_NO_UPDATE) {
+			mark_stale_if_needed(i);
+		} else {
+			mark_error(i);
+		}
+		return;
+	}
 	store_mm(i, mm);
 }
 #endif
@@ -196,6 +288,32 @@ int *sensors_poll_mask(uint8_t mask)
 int sensors_online_count(void)
 {
 	return online_count;
+}
+
+bool sensors_required_ready(bool use_six_sensors)
+{
+	uint8_t mask = BIT(IDX_FRONT_RIGHT) | BIT(IDX_RIGHT) |
+		       BIT(IDX_LEFT) | BIT(IDX_FRONT_LEFT);
+	bool ready = true;
+
+	if (use_six_sensors) {
+		mask |= BIT(IDX_HARD_RIGHT) | BIT(IDX_HARD_LEFT);
+	}
+
+	k_mutex_lock(&sensor_mutex, K_FOREVER);
+	for (int i = 0; i < SENSOR_COUNT; i++) {
+		if ((mask & BIT(i)) == 0) {
+			continue;
+		}
+		if (!fresh[i] || last_ok_ms[i] == 0 ||
+		    k_uptime_get() - last_ok_ms[i] > VL53_STALE_MS) {
+			ready = false;
+			break;
+		}
+	}
+	k_mutex_unlock(&sensor_mutex);
+
+	return ready;
 }
 
 const int *sensors_get_distances(void)
